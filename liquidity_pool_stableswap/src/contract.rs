@@ -33,11 +33,214 @@ use rewards::storage::RewardsStorageTrait;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::Client as SorobanTokenClient;
 use soroban_sdk::{
-    contract, contractimpl, contractmeta, panic_with_error, symbol_short, Address, BytesN, Env,
-    IntoVal, Map, Symbol, Val, Vec, U256,
+    contract, contractimpl, contractmeta, contracttype, panic_with_error, symbol_short, Address,
+    BytesN, Env, IntoVal, Map, String, Symbol, Val, Vec, U256,
 };
 use utils::math_errors::MathError;
 use utils::storage_errors::StorageError;
+
+mod reflector_oracle {
+    use soroban_sdk::{
+        contracttype, symbol_short, token::TokenClient, Address, IntoVal, String, Symbol, Val,
+    };
+
+    // CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63 on testnet
+    const REFLECTOR_ORACLE_OFFCHAIN_PRICES: &'static str = env!("REFLECTOR_ORACLE_OFFCHAIN_PRICES");
+
+    // CAVLP5DH2GJPZMVO7IJY4CVOD5MWEFTJFVPD2YY2FQXOQHRGHK4D6HLP on testnet
+    const REFLECTOR_ORACLE_PUBNET_PRICES: &'static str = env!("REFLECTOR_ORACLE_PUBNET_PRICES");
+
+    #[contracttype]
+    pub struct PriceData {
+        price: i128,    //asset price at given point in time
+        timestamp: u64, //recording timestamp
+    }
+
+    #[contracttype]
+    enum Asset {
+        Stellar(Address), //for Stellar Classic and Soroban assets
+        Other(Symbol),    //for any external tokens/assets/symbols
+    }
+
+    pub fn get_token_amount_in_usdc_value(
+        e: &Env,
+        token_client: &TokenClient,
+        amount: u128,
+    ) -> u128 {
+        let token_symbol = token_client.symbol();
+
+        let asset = if token_symbol == String::from_str(&e, "BTC") {
+            Some(Asset::Other(symbol_short!("BTC")))
+        } else if token_symbol == String::from_str(&e, "ETH") {
+            Some(Asset::Other(symbol_short!("ETH")))
+        } else if token_symbol == String::from_str(&e, "USDT") {
+            Some(Asset::Other(symbol_short!("USDT")))
+        } else if token_symbol == String::from_str(&e, "XRP") {
+            Some(Asset::Other(symbol_short!("XRP")))
+        } else if token_symbol == String::from_str(&e, "SOL") {
+            Some(Asset::Other(symbol_short!("SOL")))
+        } else if token_symbol == String::from_str(&e, "USDC") {
+            Some(Asset::Other(symbol_short!("USDC")))
+        } else if token_symbol == String::from_str(&e, "ADA") {
+            Some(Asset::Other(symbol_short!("ADA")))
+        } else if token_symbol == String::from_str(&e, "AVAX") {
+            Some(Asset::Other(symbol_short!("AVAX")))
+        } else if token_symbol == String::from_str(&e, "DOT") {
+            Some(Asset::Other(symbol_short!("DOT")))
+        } else if token_symbol == String::from_str(&e, "MATIC") {
+            Some(Asset::Other(symbol_short!("MATIC")))
+        } else if token_symbol == String::from_str(&e, "LINK") {
+            Some(Asset::Other(symbol_short!("LINK")))
+        } else if token_symbol == String::from_str(&e, "DAI") {
+            Some(Asset::Other(symbol_short!("DAI")))
+        } else if token_symbol == String::from_str(&e, "ATOM") {
+            Some(Asset::Other(symbol_short!("ATOM")))
+        } else if token_symbol == String::from_str(&e, "native") {
+            Some(Asset::Other(symbol_short!("XLM")))
+        } else if token_symbol == String::from_str(&e, "UNI") {
+            Some(Asset::Other(symbol_short!("UNI")))
+        } else if token_symbol == String::from_str(&e, "EURC") {
+            Some(Asset::Other(symbol_short!("EURC")))
+        } else {
+            None
+        };
+
+        // This should only be for testnet
+        let token_address = if token_client.address
+            == Address::from_string(&String::from_str(
+                &e,
+                "CDNVQW44C3HALYNVQ4SOBXY5EWYTGVYXX6JPESOLQDABJI5FC5LTRRUE",
+            )) {
+            Address::from_string(&String::from_str(
+                &e,
+                "CDJF2JQINO7WRFXB2AAHLONFDPPI4M3W2UM5THGQQ7JMJDIEJYC4CMPG",
+            ))
+        } else {
+            token_client.address.clone()
+        };
+
+        let result = if let Some(asset) = asset {
+            let last_timestamp = e.try_invoke_contract::<u64, Val>(
+                &Address::from_string(&String::from_str(&e, REFLECTOR_ORACLE_OFFCHAIN_PRICES)),
+                &Symbol::new(&e, "last_timestamp"),
+                ().into_val(e),
+            );
+
+            e.try_invoke_contract::<Option<PriceData>, Val>(
+                &Address::from_string(&String::from_str(&e, REFLECTOR_ORACLE_OFFCHAIN_PRICES)),
+                &symbol_short!("price"),
+                (asset, last_timestamp.unwrap().unwrap()).into_val(e),
+            )
+        } else {
+            let last_timestamp = e.try_invoke_contract::<u64, Val>(
+                &Address::from_string(&String::from_str(&e, REFLECTOR_ORACLE_PUBNET_PRICES)),
+                &Symbol::new(&e, "last_timestamp"),
+                ().into_val(e),
+            );
+
+            e.try_invoke_contract::<Option<PriceData>, Val>(
+                &Address::from_string(&String::from_str(&e, REFLECTOR_ORACLE_PUBNET_PRICES)),
+                &symbol_short!("price"),
+                (
+                    Asset::Stellar(token_address),
+                    last_timestamp.unwrap().unwrap(),
+                )
+                    .into_val(e),
+            )
+        };
+
+        let in_amount_usd_stellar_oracle = if let Ok(Ok(Some(price))) = result {
+            price.price
+        } else if let Ok(Ok(None)) = result {
+            0
+        } else {
+            0
+        };
+
+        let in_amount_usd_stellar_oracle =
+            (in_amount_usd_stellar_oracle as u128).fixed_mul_ceil(&e, &amount, &100000000000000);
+
+        in_amount_usd_stellar_oracle
+    }
+}
+
+#[cfg(feature = "mercury")]
+mod retroshades {
+    use retroshade_sdk::Retroshade;
+    use soroban_sdk::{contracttype, Address, Symbol, Vec, U256};
+
+    #[derive(Retroshade)]
+    #[contracttype]
+    pub struct TvlEvent {
+        pub pool_address: Address,
+        pub user_address: Address,
+        pub tokens: Vec<Address>,
+        pub reserves: Vec<u128>,
+        pub total_shares: u128,
+        pub virtual_price: u128,
+        pub fee_fraction: u32,
+        pub admin_fee: u32,
+        pub a: u128,
+        pub pool_type: Symbol,
+        pub action: Symbol,
+        pub amounts: Vec<u128>,
+        pub shares_changed: i128,
+        pub ledger: u32,
+        pub timestamp: u64,
+
+        pub usdc_reserves_after: Vec<u128>,
+        pub usdc_volume: u128,
+        pub usdc_tvl_after: u128,
+    }
+
+    #[derive(Retroshade)]
+    #[contracttype]
+    pub struct SwapEvent {
+        pub pool_address: Address,
+        pub user: Address,
+        pub sell_token: Address,
+        pub buy_token: Address,
+        pub sell_amount: u128,
+        pub buy_amount: u128,
+        pub ledger: u32,
+        pub timestamp: u64,
+
+        pub admin_fee: u128,
+        pub lp_fee: u128,
+        pub usdc_admin_fee: u128,
+        pub usdc_lp_fee: u128,
+
+        pub total_shares: u128,
+        pub accomulated: u128,
+        pub accomulated_delta: u128,
+
+        pub claimed: u128,
+        pub usdc_accomulated: u128,
+        pub usdc_claimed: u128,
+        pub current_reward_block: u64,
+        pub last_claimed_at: u64,
+    }
+
+    #[derive(Retroshade)]
+    #[contracttype]
+    pub struct YieldEvent {
+        pub pool_address: Address,
+        pub action: Symbol,
+        pub user: Address,
+        pub reward_token: Address,
+        pub amount: u128,
+        pub usdc_amount: u128,
+        pub tps: u128,
+        pub expired_at: u64,
+        pub total_shares: u128,
+        pub user_shares: u128,
+        pub total_accumulated_reward: u128,
+        pub total_configured_reward: u128,
+        pub total_claimed_reward: u128,
+        pub ledger: u32,
+        pub timestamp: u64,
+    }
+}
 
 contractmeta!(
     key = "Description",
@@ -1205,18 +1408,30 @@ impl LiquidityPoolInterfaceTrait for LiquidityPool {
         let mut new_balances: Vec<u128> = old_balances.clone();
         let coins = get_tokens(&e);
 
+        // retroshades logic
+        let mut coin_amount_map = Map::new(&e);
+        // retroshades logic end
+
         for i in 0..n_coins {
             let in_amount = amounts.get(i).unwrap();
             if token_supply == 0 && in_amount == 0 {
                 panic_with_error!(e, LiquidityPoolValidationError::AllCoinsRequired);
             }
             let in_coin = coins.get(i).unwrap();
+            let token_client = SorobanTokenClient::new(&e, &in_coin);
 
             // Take coins from the sender
             if in_amount > 0 {
-                let token_client = SorobanTokenClient::new(&e, &in_coin);
                 token_client.transfer(&user, &e.current_contract_address(), &(in_amount as i128));
             }
+
+            // retroshades logic
+            let in_amount_usd_stellar_oracle =
+                reflector_oracle::get_token_amount_in_usdc_value(&e, &token_client, in_amount)
+                    as u128;
+
+            coin_amount_map.set(in_coin, in_amount_usd_stellar_oracle);
+            // retroshades logic end
 
             new_balances.set(i, old_balances.get(i).unwrap() + in_amount);
         }
@@ -1278,10 +1493,63 @@ impl LiquidityPoolInterfaceTrait for LiquidityPool {
             panic_with_error!(&e, LiquidityPoolValidationError::OutMinNotSatisfied);
         }
         // Mint pool tokens
-        mint_shares(&e, user, mint_amount as i128);
+        mint_shares(&e, user.clone(), mint_amount as i128);
 
         // update plane data for every pool update
         update_plane(&e);
+
+        #[cfg(feature = "mercury")]
+        {
+            let mut total_usdc_tvl = 0;
+            let mut reserves_in_usdc = Vec::new(&e);
+            let reserves = Self::get_reserves(e.clone());
+
+            for i in 0..n_coins {
+                let in_coin = coins.get(i).unwrap();
+                let token_client = SorobanTokenClient::new(&e, &in_coin);
+
+                total_usdc_tvl += reflector_oracle::get_token_amount_in_usdc_value(
+                    &e,
+                    &token_client,
+                    reserves.get(i).unwrap(),
+                );
+
+                reserves_in_usdc.push_back(reflector_oracle::get_token_amount_in_usdc_value(
+                    &e,
+                    &token_client,
+                    reserves.get(i).unwrap(),
+                ));
+            }
+
+            let mut total_usdc_volume = 0;
+            for amount in coin_amount_map.values() {
+                total_usdc_volume += amount
+            }
+
+            {
+                retroshades::TvlEvent {
+                    pool_address: e.current_contract_address(),
+                    user_address: user.clone(),
+                    tokens: Self::get_tokens(e.clone()),
+                    reserves: get_reserves(&e),
+                    total_shares: get_total_shares(&e),
+                    virtual_price: Self::get_virtual_price(e.clone()),
+                    fee_fraction: get_fee(&e),
+                    admin_fee: get_admin_fee(&e),
+                    a: Self::a(e.clone()),
+                    pool_type: Self::pool_type(e.clone()),
+                    action: Symbol::new(&e, "deposit"),
+                    amounts: amounts.clone(),
+                    shares_changed: mint_amount as i128,
+                    ledger: e.ledger().sequence(),
+                    timestamp: e.ledger().timestamp(),
+                    usdc_tvl_after: total_usdc_tvl,
+                    usdc_reserves_after: reserves_in_usdc,
+                    usdc_volume: total_usdc_volume,
+                }
+                .emit(&e);
+            }
+        }
 
         PoolEvents::new(&e).deposit_liquidity(tokens, amounts.clone(), mint_amount);
 
@@ -1368,6 +1636,138 @@ impl LiquidityPoolInterfaceTrait for LiquidityPool {
         // update plane data for every pool update
         update_plane(&e);
 
+        #[cfg(feature = "mercury")]
+        {
+            // Fee parameters and info
+            let rewards = get_rewards_manager(&e);
+            let older_pool_data = rewards.storage().get_pool_reward_data();
+
+            let total_shares = get_total_shares(&e);
+            // note: we update the rewards first to reflect how the swap affects the pool's
+            // rewards. This will help us indentifying the best yield opportunities.
+            rewards.manager().update_rewards_data(total_shares);
+
+            let reward_token = rewards.storage().get_reward_token();
+            let reward_token_client = SorobanTokenClient::new(&e, &reward_token);
+
+            let pool_data = rewards.storage().get_pool_reward_data();
+
+            let total_accomulated = pool_data.accumulated;
+            let accomulated_block_delta = total_accomulated - older_pool_data.accumulated;
+            let total_claimed = pool_data.claimed;
+            let usdc_total_accomulated = reflector_oracle::get_token_amount_in_usdc_value(
+                &e,
+                &reward_token_client,
+                total_accomulated,
+            );
+
+            let usdc_total_claimed = reflector_oracle::get_token_amount_in_usdc_value(
+                &e,
+                &reward_token_client,
+                total_claimed,
+            );
+            let current_rewards_block = pool_data.block;
+            let last_claimed_at = pool_data.last_time;
+            // End parameters and info
+
+            let mut total_usdc_tvl = 0;
+            let mut reserves_in_usdc = Vec::new(&e);
+            let reserves = Self::get_reserves(e.clone());
+            let tokens = Self::get_tokens(e.clone());
+            let n_coins = tokens.len();
+
+            let mut amounts = Vec::new(&e);
+
+            for i in 0..n_coins {
+                if i == in_idx {
+                    amounts.push_back(in_amount);
+                } else if i == out_idx {
+                    amounts.push_back(dy);
+                } else {
+                    amounts.push_back(0);
+                }
+
+                let in_coin = coins.get(i).unwrap();
+                let token_client = SorobanTokenClient::new(&e, &in_coin);
+
+                total_usdc_tvl += reflector_oracle::get_token_amount_in_usdc_value(
+                    &e,
+                    &token_client,
+                    reserves.get(i).unwrap(),
+                );
+
+                reserves_in_usdc.push_back(reflector_oracle::get_token_amount_in_usdc_value(
+                    &e,
+                    &token_client,
+                    reserves.get(i).unwrap(),
+                ));
+            }
+
+            let mut total_usdc_volume = 0;
+            for amount in amounts.clone() {
+                total_usdc_volume += amount
+            }
+            {
+                retroshades::TvlEvent {
+                    pool_address: e.current_contract_address(),
+                    user_address: user.clone(),
+                    tokens: Self::get_tokens(e.clone()),
+                    reserves: get_reserves(&e),
+                    total_shares: get_total_shares(&e),
+                    virtual_price: Self::get_virtual_price(e.clone()),
+                    fee_fraction: get_fee(&e),
+                    admin_fee: get_admin_fee(&e),
+                    a: Self::a(e.clone()),
+                    pool_type: Self::pool_type(e.clone()),
+                    action: Symbol::new(&e, "swap"),
+                    amounts: amounts.clone(),
+                    shares_changed: 0,
+                    ledger: e.ledger().sequence(),
+                    timestamp: e.ledger().timestamp(),
+
+                    usdc_tvl_after: total_usdc_tvl,
+                    usdc_reserves_after: reserves_in_usdc,
+                    usdc_volume: total_usdc_volume,
+                }
+                .emit(&e);
+
+                retroshades::SwapEvent {
+                    pool_address: e.current_contract_address(),
+                    user: user.clone(),
+                    sell_token: input_coin.clone(),
+                    buy_token: token_out.clone(),
+                    sell_amount: in_amount,
+                    buy_amount: dy,
+
+                    ledger: e.ledger().sequence(),
+                    timestamp: e.ledger().timestamp(),
+
+                    admin_fee: dy_admin_fee,
+                    lp_fee: dy_fee - dy_admin_fee,
+                    usdc_admin_fee: reflector_oracle::get_token_amount_in_usdc_value(
+                        &e,
+                        &reward_token_client,
+                        dy_admin_fee,
+                    ),
+                    usdc_lp_fee: reflector_oracle::get_token_amount_in_usdc_value(
+                        &e,
+                        &reward_token_client,
+                        dy_fee - dy_admin_fee,
+                    ),
+
+                    total_shares,
+                    accomulated: total_accomulated,
+                    accomulated_delta: accomulated_block_delta,
+                    claimed: total_claimed,
+                    usdc_accomulated: usdc_total_accomulated,
+                    usdc_claimed: usdc_total_claimed,
+                    current_reward_block: current_rewards_block,
+                    last_claimed_at,
+                }
+                .emit(&e);
+            }
+        }
+
         PoolEvents::new(&e).trade(user, input_coin, token_out, in_amount, dy, dy_fee);
 
         dy
@@ -1424,6 +1824,10 @@ impl LiquidityPoolInterfaceTrait for LiquidityPool {
         let mut reserves = get_reserves(&e);
         let coins = get_tokens(&e);
 
+        // retroshades logic
+        let mut coin_amount_map = Map::new(&e);
+        // retroshades logic end
+
         for i in 0..n_coins {
             let value = reserves
                 .get(i)
@@ -1437,6 +1841,13 @@ impl LiquidityPoolInterfaceTrait for LiquidityPool {
 
             let token_client = SorobanTokenClient::new(&e, &coins.get(i).unwrap());
             token_client.transfer(&e.current_contract_address(), &user, &(value as i128));
+
+            // retroshades logic
+            let in_amount_usd_stellar_oracle =
+                reflector_oracle::get_token_amount_in_usdc_value(&e, &token_client, value) as u128;
+
+            coin_amount_map.set(coins.get(i).unwrap(), in_amount_usd_stellar_oracle);
+            // retroshades logic end
         }
         put_reserves(&e, &reserves);
 
@@ -1451,6 +1862,59 @@ impl LiquidityPoolInterfaceTrait for LiquidityPool {
 
         // update plane data for every pool update
         update_plane(&e);
+
+        #[cfg(feature = "mercury")]
+        {
+            let mut total_usdc_tvl = 0;
+            let mut reserves_in_usdc = Vec::new(&e);
+            let reserves = Self::get_reserves(e.clone());
+
+            for i in 0..n_coins {
+                let in_coin = coins.get(i).unwrap();
+                let token_client = SorobanTokenClient::new(&e, &in_coin);
+
+                total_usdc_tvl += reflector_oracle::get_token_amount_in_usdc_value(
+                    &e,
+                    &token_client,
+                    reserves.get(i).unwrap(),
+                );
+
+                reserves_in_usdc.push_back(reflector_oracle::get_token_amount_in_usdc_value(
+                    &e,
+                    &token_client,
+                    reserves.get(i).unwrap(),
+                ));
+            }
+
+            let mut total_usdc_volume = 0;
+            for amount in coin_amount_map.values() {
+                total_usdc_volume += amount
+            }
+            {
+                retroshades::TvlEvent {
+                    pool_address: e.current_contract_address(),
+                    user_address: user.clone(),
+                    tokens: Self::get_tokens(e.clone()),
+                    reserves: get_reserves(&e),
+                    total_shares: get_total_shares(&e),
+                    virtual_price: Self::get_virtual_price(e.clone()),
+                    fee_fraction: get_fee(&e),
+                    admin_fee: get_admin_fee(&e),
+                    a: Self::a(e.clone()),
+                    pool_type: Self::pool_type(e.clone()),
+                    action: Symbol::new(&e, "deposit"),
+                    amounts: amounts.clone(),
+                    shares_changed: -(share_amount as i128),
+                    ledger: e.ledger().sequence(),
+                    timestamp: e.ledger().timestamp(),
+
+                    usdc_tvl_after: total_usdc_tvl,
+                    usdc_reserves_after: reserves_in_usdc,
+                    usdc_volume: total_usdc_volume,
+                }
+                .emit(&e);
+            }
+        }
 
         PoolEvents::new(&e).withdraw_liquidity(tokens, amounts.clone(), share_amount);
 
@@ -1672,6 +2136,35 @@ impl RewardsTrait for LiquidityPool {
             .manager()
             .claim_reward(&user, total_shares, user_shares);
         rewards.storage().bump_user_reward_data(&user);
+
+        #[cfg(feature = "mercury")]
+        let reward_token = rewards.storage().get_reward_token();
+        let reward_token_client = SorobanTokenClient::new(&e, &reward_token);
+        {
+            retroshades::YieldEvent {
+                pool_address: e.current_contract_address(),
+                action: Symbol::new(&e, "claim"),
+                user: user.clone(),
+                reward_token: rewards.storage().get_reward_token(),
+                amount: reward,
+                usdc_amount: reflector_oracle::get_token_amount_in_usdc_value(
+                    &e,
+                    &reward_token_client,
+                    reward,
+                ),
+                tps: rewards.storage().get_pool_reward_config().tps,
+                expired_at: rewards.storage().get_pool_reward_config().expired_at,
+                total_shares,
+                user_shares,
+                total_accumulated_reward: Self::get_total_accumulated_reward(e.clone()),
+                total_configured_reward: Self::get_total_configured_reward(e.clone()),
+                total_claimed_reward: Self::get_total_claimed_reward(e.clone()),
+                ledger: e.ledger().sequence(),
+                timestamp: e.ledger().timestamp(),
+            }
+            .emit(&e);
+        }
+
         reward
     }
 }

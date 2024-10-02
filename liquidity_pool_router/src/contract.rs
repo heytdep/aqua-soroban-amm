@@ -41,6 +41,16 @@ use soroban_sdk::{
 use utils::storage_errors::StorageError;
 use utils::token_utils::check_vec_ordered;
 
+#[cfg(feature = "mercury")]
+mod retroshades {
+    use retroshade_sdk::Retroshade;
+    use soroban_sdk::contracttype;
+
+    #[derive(Retroshade)]
+    #[contracttype]
+    pub struct TvlEvent {}
+}
+
 #[contract]
 pub struct LiquidityPoolRouter;
 
